@@ -30,6 +30,10 @@ end
         # Reference outputs from the code before the memory refactoring
         include_isolated("golden/test.jl")
     end
+    @testset "Smoke tests" begin
+        # Simulation and output files
+        include_isolated("smoke/test.jl")
+    end
     @testset "time_opt" begin
         # Bousseau alg: update neighbours
         include("time_opt/test.jl")

@@ -34,7 +34,7 @@ function fasta_to_tree!(
     close(reader)
 
     for n in leaves(tree)
-        if isempty(n.data.sequence)
+        if any(isnothing, n.data.sequence)
             all_leaves_in_fasta = false
             break
         end

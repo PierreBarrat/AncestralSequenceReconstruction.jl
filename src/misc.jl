@@ -22,15 +22,14 @@ function entropy(X::AbstractVector)
 end
 
 function generate_short_state_table(node::TreeNode{AState{q}}) where q
-    L = length(node.data.pstates)
+    L = node.data.L
     header = vcat(
         ["Node", "Total_LogLikelihood"],
         # map(i -> "lk_$i", 1:L) # uncomment for site likelihood in file
     )
     # likelihood of reconstruction at position i (array)
     site_likelihoods = map(1:L) do i
-        c = node.data.pstates[i].c
-        node.data.pstates[i].posterior[c]
+        site_posterior(node.data, i)[node.data.sequence[i]]
     end
 
     if any(isapprox(0), site_likelihoods)
@@ -62,7 +61,6 @@ function generate_short_state_table(tree::Tree{AState{q}}; node_list = nothing) 
     end
     isempty(node_list) && error("Cannot generate a state table for empty `node_list`")
 
-    L = first(node_list).data.pstates |> length
     n = length(node_list)
     header = generate_short_state_table(first(node_list))[1]
     tab = Matrix{Any}(undef, n+1, length(header))
@@ -82,22 +80,19 @@ function generate_verbose_state_table(tree::Tree{AState{q}}, alphabet) where q
     )
 
     n = length(nodes(tree)) - length(leaves(tree))
-    L = length(first(nodes(tree)).data.pstates)
+    L = first(nodes(tree)).data.L
     tab = Matrix{Any}(undef, n*L+1, length(header))
     tab[1, :] .= header
     R(x) = round(x; sigdigits=3)
 
-    counter = 0
     for (counter, (pos, node)) in enumerate(Iterators.product(1:L, internals(tree)))
-        site_likelihoods = map(1:L) do i
-            c = node.data.pstates[i].c
-            node.data.pstates[i].posterior[c]
-        end
+        c = node.data.sequence[pos]
+        posterior = site_posterior(node.data, pos)
         tab[counter+1, 1] = label(node)
         tab[counter+1, 2] = pos
-        tab[counter+1, 3] = alphabet.string[node.data.pstates[pos].c]
-        tab[counter+1, 4] = @sprintf("%1.4f", mapreduce(R ∘ log, +, site_likelihoods))
-        tab[counter+1, 5:end] .= map(x -> @sprintf("%1.4f", R(x)),node.data.pstates[pos].posterior)
+        tab[counter+1, 3] = alphabet.string[c]
+        tab[counter+1, 4] = @sprintf("%1.4f", R(log(posterior[c])))
+        tab[counter+1, 5:end] .= map(x -> @sprintf("%1.4f", R(x)), posterior)
     end
     tab
 end

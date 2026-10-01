@@ -45,7 +45,7 @@ function evolve!(
     alphabet=model.alphabet, root=nothing, translate=true,
 ) where q
     # simulation
-    strategy = ASR.ASRMethod(;joint=true, ML=false, alphabet, optimize_branch_length=false)
+    strategy = ASR.ASRMethod(;joint=true, ML=false, optimize_branch_length=false)
     for pos in ASR.ordering(model)
         ASR.set_pos(pos) # set global var pos
         ASR.reset_state!(tree, pos)

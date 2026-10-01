@@ -93,8 +93,7 @@ function ProfileModel(
     pc=1e-2, alphabet=:aa, reweighting=false, θ=0.2,
 )
     sequences = FASTAReader(open(fastafile, "r")) do reader
-        map(sequence_to_intvec∘sequence, reader)
-        # mapreduce(rec -> sequence_to_intvec(sequence(rec); alphabet)', vcat, reader)
+        map(rec -> sequence_to_intvec(sequence(rec); alphabet), reader)
     end
     L, M, q = length(first(sequences)), length(sequences), length(Alphabet(alphabet))
     weights = if reweighting

@@ -66,7 +66,7 @@ function infer_ancestral(
     L = length(first(leaf_sequences)[2])
     q = length(model.alphabet)
     if any(x -> length(x[2]) != L, leaf_sequences)
-        error("All sequences must have the same length in $fastafile")
+        error("All leaf sequences must have the same length")
     end
 
     tree = convert(AState{q}, tree)
@@ -301,7 +301,7 @@ function write_state_table(
             """)
         end
         for (file, table) in zip(outtable, state_tables)
-            writeddlm(file, table, '\t')
+            writedlm(file, table, '\t')
         end
     else
         error("Got $outtable for `outtable` argument, expected string or array of strings")
