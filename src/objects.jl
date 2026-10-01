@@ -176,6 +176,14 @@ function reset_state!(node::TreeNode{<:AState})
     return nothing
 end
 
+"""
+    site_posterior(state::AState, pos::Int)
+
+Posterior distribution over states at site `pos`, as computed during the last
+reconstruction.
+"""
+site_posterior(state::AState, pos::Int) = state.pstates[pos].posterior
+
 reconstructed_positions(state::AState) = findall(!isnothing, state.sequence)
 is_reconstructed(state::AState, pos::Int) = !isnothing(state.sequence[pos])
 hassequence(state::AState{q}) where q = all(i -> is_reconstructed(state, i), 1:state.L)
