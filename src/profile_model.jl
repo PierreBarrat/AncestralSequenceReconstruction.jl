@@ -141,13 +141,10 @@ ordering(model::ProfileModel) = 1:length(model)
 #=
 ########## set_π ##########
 =#
-function set_π!(pstate::PosState{q}, model::ProfileModel{q}) where q
-    for (a, x) in enumerate(model.P[pstate.pos])
-        pstate.weights.π[a] = x
-    end
+function set_π!(astate::AState{q}, model::ProfileModel{q}, pos::Int) where q
+    astate.weights.π .= model.P[pos]
     return nothing
 end
-set_π!(astate::AState, model::ProfileModel, pos::Int) = set_π!(astate.pstates[pos], model)
 
 
 #=

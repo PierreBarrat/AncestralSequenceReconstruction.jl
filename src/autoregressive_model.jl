@@ -44,7 +44,7 @@ function set_π!(astate::AState{q}, model::AutoRegressiveModel{q}, pos::Int) whe
     # special case of first ordering position
     if ar_pos == 1
         for (a, x) in enumerate(model.arnet.p0)
-            astate.pstates[pos].weights.π[a] = x
+            astate.weights.π[a] = x
         end
         return nothing
     end
@@ -54,10 +54,7 @@ function set_π!(astate::AState{q}, model::AutoRegressiveModel{q}, pos::Int) whe
 
     local_field = copy(H)
     for ar_i in 1:(ar_pos-1)
-        b = astate.pstates[idxperm[ar_i]].c
-        if isnothing(b)
-            b = astate.sequence[idxperm[ar_i]]
-        end
+        b = astate.sequence[idxperm[ar_i]]
         isnothing(b) && error("Sequence not yet reconstructed at site $(idxperm[ar_i])")
         for a in 1:q
             local_field[a] += J[a, b, ar_i]
@@ -66,7 +63,7 @@ function set_π!(astate::AState{q}, model::AutoRegressiveModel{q}, pos::Int) whe
     ArDCA.softmax!(local_field)
 
     for (a, x) in enumerate(local_field)
-        astate.pstates[pos].weights.π[a] = x
+        astate.weights.π[a] = x
     end
 end
 

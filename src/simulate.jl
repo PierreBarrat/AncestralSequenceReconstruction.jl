@@ -2,6 +2,7 @@ module Simulate
 
 using AncestralSequenceReconstruction
 using FASTX
+using StatsBase: wsample
 using TreeTools
 
 """
@@ -44,22 +45,12 @@ function evolve!(
     tree::Tree{ASR.AState{q}}, model::EvolutionModel;
     alphabet=model.alphabet, root=nothing, translate=true,
 ) where q
-    # simulation
-    strategy = ASR.ASRMethod(;joint=true, ML=false, optimize_branch_length=false)
+    # simulation, site by site
     for pos in ASR.ordering(model)
-        ASR.set_pos(pos) # set global var pos
-        ASR.reset_state!(tree, pos)
-        # set transition matrices for all branches
+        # set equilibrium frequencies and transition matrices for all branches
         ASR.set_transition_matrix!(tree, model, pos)
-        # set set state from transition matrix
-        # down likelihood should be 1 since never initialized
-        if isnothing(root)
-            ASR.set_states!(tree, pos, strategy)
-        else
-            tree.root.data.pstates[pos].c = root[pos]
-            foreach(c -> ASR.set_state!(c, root[pos], pos, strategy), children(tree.root))
-        end
-        foreach(n -> n.data.sequence[pos] = n.data.pstates[pos].c, nodes(tree))
+        root_state = isnothing(root) ? wsample(tree.root.data.weights.π) : root[pos]
+        sample_from_ancestor!(tree.root, root_state, pos)
     end
 
     # collect sequences
@@ -73,6 +64,15 @@ function evolve!(
     end |> Dict
 
     return leaf_sequences, internal_sequences
+end
+
+# set the state of `node` at `pos`, then sample its children from the transition matrices
+function sample_from_ancestor!(node::TreeNode, state::Int, pos)
+    node.data.sequence[pos] = state
+    for c in children(node)
+        sample_from_ancestor!(c, wsample(view(c.data.weights.T, state, :)), pos)
+    end
+    return nothing
 end
 
 end

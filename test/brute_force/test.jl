@@ -113,8 +113,7 @@ end
     )
     leaf_sequences = Dict("A" => "AV", "B" => "AI", "C" => "VI", "D" => "TV")
     tree = make_tree(leaf_sequences, q; alphabet=:aa)
-    # root uses the "infinite branch" transition matrix, which treats gaps differently
-    test_against_brute_force(tree, model; joint_lk_broken=true)
+    test_against_brute_force(tree, model)
 end
 
 @testset "Sampling distributions" begin

@@ -175,17 +175,19 @@ function infer_ancestral!(
         opt_strat = @set strategy.joint=false
         optimize_branch_scale!(tree, model, opt_strat)
     end
-    # Reconstruction
+    # Reconstruction: sets `sequence` and `posterior` at each node
     pruning_alg!(tree, model, strategy)
-    for n in internals(tree), pos in ordering(model)
-        n.data.sequence[pos] = n.data.pstates[pos].c
-    end
-    return nothing # return value should be lk of reconstruction
+    return nothing
 end
 
+"""
+    tree_likelihood!(tree, model, strategy)
+
+Log-likelihood of the leaf sequences. For joint ML strategies, this is the likelihood of
+the best joint reconstruction.
+"""
 function tree_likelihood!(tree::Tree, model::EvolutionModel, strategy::ASRMethod)
-    pruning_alg!(tree, model, strategy; set_state=false)
-    return likelihood(tree.root, strategy)
+    return pruning_alg!(tree, model, strategy; set_state=false)
 end
 
 

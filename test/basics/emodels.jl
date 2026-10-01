@@ -48,15 +48,12 @@ local_p_x2 = arnet(x2);
 @testset "local field" begin
     t = copy(tree)
 
+    # π is only stored for the current site: check it right after setting it
     for i in ASR.ordering(ar_model)
-        ASR.reset_state!(t, i)
         ASR.set_π!(t["A"].data, ar_model, i)
         ASR.set_π!(t["B"].data, ar_model, i)
-    end
-
-    for i in 1:L
-        @test isapprox(local_p_x1[i], t["A"].data.pstates[i].weights.π[x1[i]]; rtol = 1e-6)
-        @test isapprox(local_p_x2[i], t["B"].data.pstates[i].weights.π[x2[i]]; rtol = 1e-6)
+        @test isapprox(local_p_x1[i], t["A"].data.weights.π[x1[i]]; rtol = 1e-6)
+        @test isapprox(local_p_x2[i], t["B"].data.weights.π[x2[i]]; rtol = 1e-6)
     end
 end
 
@@ -67,12 +64,12 @@ end
     j = perm[2]
 
     ASR.set_π!(t["R"].data, ar_model, i)
-    @test t["R"].data.pstates[i].weights.π ≈ ar_model.arnet.p0
+    @test t["R"].data.weights.π ≈ ar_model.arnet.p0
 
     @test_throws ErrorException ASR.set_π!(t["R"].data, ar_model, j)
-    t["R"].data.pstates[i].c = x1[i]
+    t["R"].data.sequence[i] = x1[i]
     @test isnothing(ASR.set_π!(t["R"].data, ar_model, j))
-    @test local_p_x1[j] ≈ t["R"].data.pstates[j].weights.π[x1[j]]
+    @test local_p_x1[j] ≈ t["R"].data.weights.π[x1[j]]
 end
 
 @testset "Reconstruction at root: energy" begin

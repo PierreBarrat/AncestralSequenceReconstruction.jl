@@ -48,3 +48,17 @@ end
         end
     end
 end
+
+@testset "Memory per site" begin
+    # Only the sequence and posterior should be stored for every site: the memory used by
+    # a reconstructed tree should grow with L by ~ (q floats + 1 integer) per node and site
+    function tree_size(L)
+        model = ASR.JukesCantor(L)
+        leaf_sequences = Dict(label(n) => rand(1:q, L) for n in leaves(tree))
+        t, _ = infer_ancestral(tree, leaf_sequences, model, ASRMethod(; ML=true))
+        return Base.summarysize(t)
+    end
+    L1, L2 = 10, 1000
+    bytes_per_site = (tree_size(L2) - tree_size(L1)) / (L2 - L1) / length(nodes(tree))
+    @test bytes_per_site < 8q + 32
+end
