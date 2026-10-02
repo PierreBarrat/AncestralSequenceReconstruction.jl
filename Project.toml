@@ -17,10 +17,8 @@ SubstitutionModels = "8365b1bb-bd83-58ee-a267-f2965fc81c73"
 TreeTools = "62f0eae3-8c0e-4032-a621-7756092209e5"
 
 [compat]
-# 0.6 (Julia < 1.11) and 0.8 provide different tree traversals: see `postorder_nodes`.
-# 0.7 was not tested.
-TreeTools = "0.6, 0.8"
-julia = "1.9"
+TreeTools = "0.8"
+julia = "1.11" # required by TreeTools 0.8
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
