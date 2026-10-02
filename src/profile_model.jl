@@ -93,8 +93,7 @@ function ProfileModel(
     pc=1e-2, alphabet=:aa, reweighting=false, θ=0.2,
 )
     sequences = FASTAReader(open(fastafile, "r")) do reader
-        map(sequence_to_intvec∘sequence, reader)
-        # mapreduce(rec -> sequence_to_intvec(sequence(rec); alphabet)', vcat, reader)
+        map(rec -> sequence_to_intvec(sequence(rec); alphabet), reader)
     end
     L, M, q = length(first(sequences)), length(sequences), length(Alphabet(alphabet))
     weights = if reweighting
@@ -142,13 +141,10 @@ ordering(model::ProfileModel) = 1:length(model)
 #=
 ########## set_π ##########
 =#
-function set_π!(pstate::PosState{q}, model::ProfileModel{q}) where q
-    for (a, x) in enumerate(model.P[pstate.pos])
-        pstate.weights.π[a] = x
-    end
+function set_π!(astate::AState{q}, model::ProfileModel{q}, pos::Int) where q
+    astate.weights.π .= model.P[pos]
     return nothing
 end
-set_π!(astate::AState, model::ProfileModel, pos::Int) = set_π!(astate.pstates[pos], model)
 
 
 #=

@@ -13,7 +13,7 @@ abstract type EvolutionModel{q} end
 """
     set_π!(astate::AState, model::EvolutionModel, pos::Int)
 
-Set equilibrium frequencies of for ancestral state `astate` at site `pos` using `model`.
+Set equilibrium frequencies `astate.weights.π` at site `pos` using `model`.
 """
 function set_π! end
 
@@ -176,7 +176,7 @@ end
     )
 
 Set transition matrix to the input ancestral state, using branch length `t`.
-Store result in `astate.pstates[pos].weights.T`.
+Store result in `astate.weights.T`.
 
 ## Note
 - calls `set_π!(astate, model, pos)` if needed
@@ -187,9 +187,8 @@ function set_transition_matrix!(
     set_equilibrium_frequencies=true
 )
     set_equilibrium_frequencies && set_π!(astate, model, pos)
-    π = astate.pstates[pos].weights.π
     return set_transition_matrix!(
-        astate.pstates[pos].weights.T, model.μ*t, π;
+        astate.weights.T, model.μ*t, astate.weights.π;
         with_code = model.with_code, gen_code = model.genetic_code,
     )
 end

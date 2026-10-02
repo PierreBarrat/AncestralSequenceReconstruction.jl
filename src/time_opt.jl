@@ -61,36 +61,25 @@ function optimize_branch_length!(
     rconv = 1e-3,
 ) where q
     set_verbose(strategy.verbosity)
+    strategy.joint && error("Branch length optimization requires `strategy.joint = false`")
+    if model.with_code
+        @warn "Branch length optimization ignores the genetic code (`model.with_code`)"
+    end
     verbose() > 0 && @info "Optimizing branch length."
     verbose() > 2 && @info "Branch lengths" map(branch_length, tree)
 
-    # initial state
-    verbose() > 1 && @info "First pass of likelihood computation..."
-    t = @elapsed pruning_alg!(tree, model, strategy; set_state=false)
-    lk = [likelihood(tree.root, strategy)]
-    verbose() > 1 && @info "Initial lk $(lk[1]) - $t seconds"
+    lk = [tree_likelihood!(tree, model, strategy)]
+    verbose() > 1 && @info "Initial log-likelihood $(lk[1])"
 
-    # first pass
-    verbose() > 1 && @info "First pass of branch length opt..."
-    t = @elapsed optimize_branch_lengths_cycle!(tree, model, strategy)
-    push!(lk, likelihood(tree.root, strategy))
-    lk[end] < lk[end-1] && @warn "Likelihood decreased during optimization: something's wrong"
-    rel_delta_lk = (lk[end-1] - lk[end]) / lk[end-1]
-    verbose() > 1 && @info "Likelihood $(lk) - $t seconds"
-    verbose() > 1 && @info "Relative lk increase: $(rel_delta_lk)"
-    verbose() > 2 && @info "Branch lengths" map(branch_length, tree)
-
-    n = 0
-    while abs(rel_delta_lk) > rconv && n < (strategy.optimize_branch_length_cycles - 1)
-        verbose() > 1 && @info "Branch length opt $(n+2)..."
+    for cycle in 1:strategy.optimize_branch_length_cycles
         t = @elapsed optimize_branch_lengths_cycle!(tree, model, strategy)
-        push!(lk, likelihood(tree.root, strategy))
+        push!(lk, tree_likelihood!(tree, model, strategy))
         lk[end] < lk[end-1] && @warn "Likelihood decreased during optimization: something's wrong"
         rel_delta_lk = (lk[end-1] - lk[end]) / lk[end-1]
-        verbose() > 1 && @info "Likelihood $(lk) - $t seconds"
+        verbose() > 1 && @info "Cycle $cycle: log-likelihood $(lk[end]) - $t seconds"
         verbose() > 1 && @info "Relative lk increase: $(rel_delta_lk)"
         verbose() > 2 && @info "Branch lengths" map(branch_length, tree)
-        n += 1
+        abs(rel_delta_lk) < rconv && break
     end
 
     return lk
@@ -113,121 +102,86 @@ end
 
 
 
-function optimize_branch_lengths_cycle!(
-    tree::Tree,
-    model::ProfileModel{q},
-    strategy = ASRMethod(; joint=false)
-) where q
-    # global opt parameters
+"""
+    optimize_branch_lengths_cycle!(tree, model::ProfileModel, strategy)
+
+Optimize the length of each branch in turn (post-order), keeping the others fixed.
+"""
+function optimize_branch_lengths_cycle!(tree::Tree, model::ProfileModel, strategy)
     L = length(model)
-    params = (
-        L = L,
-        Qs = [zeros(Float64, q, q) for _ in 1:L],
-        Ts = [zeros(Float64, q, q) for _ in 1:L],
-        model = model,
-        lk_holder = Vector{Float64}(undef, L),
-        qholder_1 = Vector{Float64}(undef, q),
-        qholder_2 = Vector{Float64}(undef, q),
-    )
-    # optimizer
-    lw_bound = BRANCH_LWR_BOUND(L; style=:ml)
-    up_bound = BRANCH_UPR_BOUND(model; style=:bayes)
-    epsconv = 1e-2
-    maxit = 100
-
-    opt = Opt(:LD_LBFGS, 1)
-    lower_bounds!(opt, lw_bound)
-    upper_bounds!(opt, up_bound)
-    # xtol_abs!(opt, epsconv)
-    # xtol_rel!(opt, epsconv)
-    # ftol_abs!(opt, epsconv)
-    ftol_rel!(opt, epsconv)
-    maxeval!(opt, maxit)
-
-
-    # cycle through nodes
-    for n in Iterators.filter(!isroot, POT(tree))
-        # set best branch length for n
-        @debug "\n---- Opt. branch length node $(label(n)) ----"
-        @debug "Previous lk" ASR.likelihood(n, strategy)
-        @debug "Previous branch length $(branch_length(n))"
-        optimize_branch_length!(n, opt, params)
-
-        # recompute the transition matrix for the branch above n
-        foreach(1:L) do i
-            ASR.set_transition_matrix!(
-                n.data, model, branch_length(n), i; set_equilibrium_frequencies=false
-            )
-        end
-        pruning_alg!(tree, model, strategy; set_state=false)
-        @debug "New lk" ASR.likelihood(n, strategy)
-        @debug "New branch length $(branch_length(n))"
-        @debug "Branch length bounds $(lw_bound) < $(up_bound)"
-
-        @debug "Ancestor $(label(ancestor(n))) lk" ASR.likelihood(ancestor(n), strategy)
+    a, b = zeros(Float64, L), zeros(Float64, L)
+    opt = branch_length_optimizer(model)
+    for node in Iterators.filter(!isroot, POT(tree))
+        # one pass of the message passing algorithm, with current branch lengths
+        branch_coefficients!(a, b, tree, node, model, strategy)
+        optimize_branch_length!(node, opt, a, b, model.μ)
     end
-
-
     return nothing
 end
 
-function optimize_branch_length!(node::TreeNode, opt::NLopt.Opt, params)
-    max_objective!(opt, (t, g) -> optim_wrapper(t, g, params, node))
-    g = Float64[0.]
-    t0 = min(max(Float64[branch_length(node)], opt.lower_bounds), opt.upper_bounds)
+"""
+    branch_coefficients!(a, b, tree, node, model::ProfileModel, strategy)
 
-    # =for testing=#
-    # lk = optim_wrapper(t0, g, params, node)
-    # @info (node=label(node), time=t0[1], lk=lk, grad=g[1])
+For the profile model, `T = ν I + (1 - ν) 1 π'` with `ν = exp(-μ t)`.
+Up to a constant factor, the likelihood of site `i` as a function of the length `t` of the
+branch above `node` is then
+```
+u' T v = ν (u ⋅ v) + (1 - ν) sum(u) (π ⋅ v) = ν a[i] + (1 - ν) b[i]
+```
+where `u` and `v` are the up and down likelihoods at `node`.
+Compute `a` and `b` for all sites, with one pass of the message passing algorithm.
+"""
+function branch_coefficients!(a, b, tree, node, model::ProfileModel, strategy)
+    for pos in ordering(model)
+        process_site!(tree, model, strategy, pos; set_state=false)
+        W = node.data.weights
+        a[pos] = dot(W.u, W.v)
+        b[pos] = sum(W.u) * dot(W.π, W.v)
+    end
+    return nothing
+end
 
-    result = optimize(opt, t0)
+"""
+    branch_loglk_and_grad(t, a, b, μ)
+
+Log-likelihood `sum_i log(ν a[i] + (1 - ν) b[i])` with `ν = exp(-μ t)`, and its
+derivative with respect to `t`. See `branch_coefficients!`.
+"""
+function branch_loglk_and_grad(t, a, b, μ)
+    ν = exp(-μ * t)
+    loglk, grad = 0., 0.
+    for (ai, bi) in zip(a, b)
+        lk = ν * ai + (1 - ν) * bi
+        loglk += log(lk)
+        grad += -μ * ν * (ai - bi) / lk # dν/dt = -μ ν
+    end
+    return loglk, grad
+end
+
+function branch_length_optimizer(model::ProfileModel)
+    opt = Opt(:LD_LBFGS, 1)
+    lower_bounds!(opt, BRANCH_LWR_BOUND(length(model); style=:ml))
+    upper_bounds!(opt, BRANCH_UPR_BOUND(model; style=:bayes))
+    ftol_rel!(opt, 1e-2)
+    maxeval!(opt, 100)
+    return opt
+end
+
+function optimize_branch_length!(node::TreeNode, opt::NLopt.Opt, a, b, μ)
+    max_objective!(opt, (t, grad) -> begin
+        loglk, g = branch_loglk_and_grad(t[1], a, b, μ)
+        if !isempty(grad)
+            grad[1] = g
+        end
+        loglk
+    end)
+    t0 = clamp(branch_length(node), opt.lower_bounds[1], opt.upper_bounds[1])
+    result = optimize(opt, [t0])
     if !in(result[3], [:SUCCESS, :STOPVAL_REACHED, :FTOL_REACHED, :XTOL_REACHED])
         @warn "Branch length opt. above $(label(node)): $result"
     end
     branch_length!(node, result[2][1])
     return result
-end
-
-function optim_wrapper(t, grad, p, node)
-    foreach(1:p.L) do i
-        ASR.set_transition_rate_matrix!(p.Qs[i], p.model, i) # why is this here? useless to repeat this for each time
-        ASR.set_transition_matrix!(p.Ts[i], p.model, t[1], i)
-    end
-    loglk, g = ASR.branch_length_loglk_and_grad(
-        node, p.Qs, p.Ts, p.model.μ, p.lk_holder, p.qholder_1, p.qholder_2,
-    )
-    if !isempty(grad)
-        grad[1] = g
-    end
-    return loglk
-end
-
-function branch_length_loglk_and_grad(
-    node::TreeNode,
-    Qs::AbstractVector{<:AbstractMatrix{Float64}},
-    Ts::AbstractVector{<:AbstractMatrix{Float64}},
-    μ,
-    lk_holder::Vector{Float64}, # dim L
-    qholder_1::Vector{Float64}, # dim q
-    qholder_2::Vector{Float64},
-)
-    for (i, (s, T)) in enumerate(zip(node.data.pstates, Ts))
-        mul!(qholder_1, T, s.weights.v)
-        lk_holder[i] = s.weights.u' * qholder_1
-    end
-    loglk = sum(log, lk_holder)
-    if isnan(loglk)
-        @info lk_holder, map(s -> (s.weights.u', s.weights.v), node.data.pstates)
-        error("Error when computing likelihood: encountered `NaN` - node $(label(node))")
-    end
-
-    grad = sum(zip(node.data.pstates, Qs, Ts, lk_holder)) do (s, Q, T, lk)
-        mul!(qholder_1, T, s.weights.v)
-        mul!(qholder_2, Q, qholder_1)
-        μ * s.weights.u' * qholder_2 / lk
-    end
-
-    return loglk, grad
 end
 
 ###########################################################################################
@@ -315,110 +269,6 @@ end
 function scale_branches!(tree::Tree, μ::Number)
     foreach(n -> branch_length!(n, μ*branch_length(n)), nodes(tree; skiproot=true))
 end
-
-###########################################################################################
-################################# OLD CODE / FOR TESTING ##################################
-###########################################################################################
-
-"""
-    update_neighbours!(node::TreeNode)
-
-    WONT WORK -- keeping for now but should not be used
-"""
-function update_neighbours!(node::TreeNode; kwargs...)
-    return foreach(i -> update_neighbours!(node, i; kwargs...), 1:node.data.L)
-end
-function update_neighbours!(
-    node::TreeNode, pos::Int;
-    sisters = false, anc = false, child = false,
-)
-    @warn "update_neighbours! should probably not be used"
-    @assert !isroot(node) "This should never be called on the root node"
-    if sisters
-        # sisters of node: likelihood up `u` has to be recomputed
-        # node will be involved as: node.T * node.v
-        for sister in Iterators.filter(!=(node), children(ancestor(node)))
-            reset_up_likelihood!(sister, pos)
-            fetch_up_lk!(sister, pos)
-            normalize_weights!(sister, pos)
-        end
-    end
-    if anc
-        # ancestor of node: likelihood down `v` has to be recomputed
-        # node will be involved as: node.T * node.v
-        A = ancestor(node)
-        reset_down_likelihood!(A, pos)
-        for c in children(A)
-            pull_weights_from_child!(A.data.pstates[pos], c.data.pstates[pos])
-        end
-        normalize_weights!(A, pos)
-    end
-
-    if child
-        # children of node: likelihood up `u` has to be recomputed
-        # node will be involved as: node.T * node.u
-        for c in children(node)
-            reset_up_likelihood!(c, pos)
-            fetch_up_lk!(c, pos)
-            normalize_weights!(c, pos)
-        end
-    end
-end
-
-#=
-Optimize a single branch length (no cycle)
-useful only for testing
-check code before running, not up to date with the other optimize_branch_length!
-=#
-function optimize_branch_length!(node::TreeNode, model::EvolutionModel{q}) where q
-    L = length(node.data.pstates)
-    # Set parameters
-    params = (
-        L = L,
-        Qs = [zeros(Float64, q, q) for _ in 1:L],
-        Ts = [zeros(Float64, q, q) for _ in 1:L],
-        model = model,
-    )
-
-    # Set optimizer
-    # optimizer
-    lw_bound = BRANCH_LWR_BOUND(L)
-    up_bound = BRANCH_UPR_BOUND(L)
-    epsconv = 1e-4
-    maxit = 100
-
-    opt = Opt(:LD_LBFGS, 1)
-    lower_bounds!(opt, lw_bound)
-    upper_bounds!(opt, up_bound)
-    # xtol_abs!(opt, epsconv)
-    # xtol_rel!(opt, epsconv)
-    # ftol_abs!(opt, epsconv)
-    ftol_rel!(opt, epsconv)
-    maxeval!(opt, maxit)
-
-    # Optimize
-    @debug "---- Opt. branch length node $(label(node)) ----"
-    @debug "Previous lk" ASR.likelihood(node)
-
-    optimize_branch_length!(node, opt, params)
-
-
-    # recompute the transition matrix for the branch above n
-    foreach(1:L) do i
-        ASR.set_transition_matrix!(node.data, model, branch_length(node), i)
-    end
-    @debug "New lk" ASR.likelihood(node)
-
-
-
-    @debug "Ancestor $(label(ancestor(node))) lk" ASR.likelihood(ancestor(node))
-    for c in children(ancestor(node))
-        @debug "sister $(label(c)) lk" ASR.likelihood(c)
-    end
-end
-
-
-
 
 #========================#
 ######### Bounds #########

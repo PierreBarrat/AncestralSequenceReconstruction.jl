@@ -69,11 +69,11 @@ See `?ASR.ASRMethod` for a docstring. Here, we go for a simple maximum-likelihoo
 
 # ╔═╡ 0b53e764-0f4e-47f0-a30f-14c65451e4bd
 strategy = ASRMethod(;
-	joint = false, # (default) - joint reconstruction not functional yet
-	ML = true, # (default)
+	joint = false, # (default) - marginal reconstruction. `true` for joint reconstruction, see `?ASR.ASRMethod`
+	ML = true, # most likely state. The default is `false`, which samples states instead
 	verbosity = 1, # the default is 0. 
 	optimize_branch_length = true, # (default: false) - optimize the branch lengths of the tree using the evolutionary model
-	optimize_branch_scale = false, # (default) - would optimize the branches while keeping their relative lengths fixed. Incompatible with the previous. 
+	optimize_branch_scale = false, # (default) - would rescale all branches by a common factor. Incompatible with the previous, and not available for autoregressive models. 
 	repetitions = 1, # (default) - for Bayesian reconstruction, multiple repetitions of the reconstruction process can be done to sample likely ancestors
 )
 
@@ -181,12 +181,12 @@ The tree, alignment and model remain the same. We will change the `ASRMethod` ob
 
 # ╔═╡ 97326b1e-7013-42de-8aa6-34b9d5bfca59
 strategy_bayesian = ASRMethod(;
-	joint = false, # (default) - joint reconstruction not functional yet
-	ML = false, # (default)
+	joint = false, # (default) - marginal reconstruction. `true` for joint reconstruction, see `?ASR.ASRMethod`
+	ML = false, # (default) - sample states from their posterior distribution
 	verbosity = 1, # the default is 0. 
 	optimize_branch_length = true, # (default: false) - optimize the branch lengths of the tree using the evolutionary model
-	optimize_branch_scale = false, # (default) - would optimize the branches while keeping their relative lengths fixed. Incompatible with the previous. 
-	repetitions = 10, # (default) - for Bayesian reconstruction, multiple repetitions of the reconstruction process can be done to sample likely ancestors
+	optimize_branch_scale = false, # (default) - would rescale all branches by a common factor. Incompatible with the previous, and not available for autoregressive models. 
+	repetitions = 10, # (the default is 1) - for Bayesian reconstruction, multiple repetitions of the reconstruction process can be done to sample likely ancestors
 )
 
 # ╔═╡ 91d7b5d6-2ad3-40f0-bea1-f1634131559d

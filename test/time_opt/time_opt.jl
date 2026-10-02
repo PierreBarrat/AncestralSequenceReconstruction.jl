@@ -28,7 +28,7 @@ end
     tree_test, lk = ASR.optimize_branch_length(tree, model)
     for n in nodes(tree_test; skiproot = true)
         if label(n) == "C"
-            @test branch_length(n) == ASR.BRANCH_UPR_BOUND(L)
+            @test branch_length(n) == ASR.BRANCH_UPR_BOUND(model)
         else
             @test branch_length(n) == ASR.BRANCH_LWR_BOUND(L)
         end
@@ -43,7 +43,7 @@ tree["D"].data.sequence .= 2
     tree_test, lk = ASR.optimize_branch_length(tree, model)
     for n in nodes(tree_test; skiproot = true)
         if label(n) == "I1"
-            @test branch_length(n) == ASR.BRANCH_UPR_BOUND(L)
+            @test branch_length(n) == ASR.BRANCH_UPR_BOUND(model)
         else
             @test branch_length(n) == ASR.BRANCH_LWR_BOUND(L)
         end

@@ -1,11 +1,31 @@
+#=
+Message passing on the tree, one site at a time.
+
+For each site `pos`:
+1. `prepare_site!`: compute `π` and `T` for every node, set the observed states at leaves.
+2. `messages_from_leaves!`: compute down-likelihoods `v` (and messages `lm_up`), from the
+   leaves to the root. This gives the likelihood of the site.
+3. Depending on the strategy:
+   - marginal (ML or sampling): `messages_from_root!` computes up-likelihoods `u`, from
+     the root to the leaves. The posterior at each node then follows from `u`, `T` and `v`.
+   - joint sampling: sample the root, then sample each node given its ancestor's state.
+   - joint ML (Pupko et al.): messages use max instead of sum, and states are found by
+     going back from the root to the leaves (`best_state`).
+
+See `BranchWeights` for the meaning of `π`, `T`, `u`, `v`.
+=#
+
 #######################################################################################
 ####################################### Main alg ######################################
 #######################################################################################
 
 """
-    pruning_alg!(tree, model::EvolutionModel, strategy::ASRMethod)
+    pruning_alg!(tree, model::EvolutionModel, strategy::ASRMethod; set_state = true)
 
-Apply the pruning algorithm (Bousseau et. al.) to `tree` in place.
+Run the message passing algorithm on `tree`, one site at a time, in the order given by
+`ordering(model)`. Return the log-likelihood.
+If `set_state`, also reconstruct the sequence and posterior at each node,
+stored in `node.data.sequence` and `node.data.posterior`.
 """
 function pruning_alg!(
     tree::Tree{AState{q}}, model::EvolutionModel, strategy::ASRMethod;
@@ -14,375 +34,238 @@ function pruning_alg!(
     if isa(model, AutoRegressiveModel) && !set_state
         error("Inconsistent `model::AutoRegressiveModel` and `set_state=false`")
     end
+    return sum(ordering(model)) do pos
+        process_site!(tree, model, strategy, pos; set_state)
+    end
+end
 
-    holder = Vector{Float64}(undef, q) # for in place mat mul
-    for pos in ordering(model)
-        set_pos(pos) # set global var pos
-        reset_state!(tree, pos)
-        # set transition matrices for all branches
-        # also sets equilibrium probabilities
-        set_transition_matrix!(tree, model, pos)
+"""
+    process_site!(tree, model, strategy, pos; set_state=true)
 
-        # compute down likelihood for all nodes
-        down_likelihood!(tree, strategy; holder)
-        # compute up likelihood
-        up_likelihood!(tree, strategy; holder)
+Compute messages at site `pos` and, if `set_state`, reconstruct the state and posterior of
+each node at this site. Return the log-likelihood of the site.
+"""
+function process_site!(tree::Tree, model, strategy::ASRMethod, pos; set_state=true)
+    prepare_site!(tree, model, pos)
 
-        # for each node n set n.data.pstates[pos].c :: Int, based on the strategy
-        set_state && set_states!(tree, pos, strategy)
+    use_max = strategy.joint && strategy.ML
+    loglk = messages_from_leaves!(tree.root, use_max)
+
+    if strategy.joint && strategy.ML
+        set_state && reconstruct_joint_ML!(tree.root, pos)
+    elseif strategy.joint
+        set_state && sample_joint!(tree.root, pos)
+    else
+        messages_from_root!(tree.root)
+        set_state && reconstruct_marginal!(tree.root, pos, strategy.ML)
+    end
+
+    return loglk
+end
+
+function prepare_site!(tree::Tree, model::EvolutionModel, pos)
+    for node in nodes(tree)
+        reset_weights!(node.data.weights)
+        # also sets equilibrium frequencies π
+        set_transition_matrix!(node.data, model, branch_length(node), pos)
+        isleaf(node) && set_leaf_state!(node.data, pos)
     end
     return nothing
 end
 
-"""
-    pruning_alg(tree::Tree, model::EvolutionModel[, strategy::ASRMethod])
-
-Apply the Bousseau *et. al.* algorithm to a copy of `tree`.
-For each node `n` and sequence position `pos`,
-up likelihoods will be in `n.data.pstates[pos].weights.u` and the down
-likelihoods in `n.data.pstates[pos].weights.v`.
-"""
-function pruning_alg(tree, model, strategy)
-    tc = copy(tree)
-    pruning_alg!(tc, model, strategy)
-    return tc
+function set_leaf_state!(leaf::AState, pos)
+    a = leaf.sequence[pos]
+    if isnothing(a)
+        error("""Tried to initialize leaf state at position $(pos), got `nothing`.
+            Are sequences attached to the leaves of the tree?""")
+    end
+    leaf.weights.v .= 0
+    leaf.weights.v[a] = 1
+    return nothing
 end
-
-
 
 #######################################################################################
 ####################################### Messages ######################################
 #######################################################################################
 
-## Message up
-
 """
-    log_message_up!(node::PosState, t, model, strategy)
+    messages_from_leaves!(node, use_max::Bool)
 
-Get the log of the exact messages `node --> ancestor(node)`: `log(Q*v) + log(F)`.
-This uses only information from *below* `node`.
+Compute the down-likelihood `v` of `node` and of all nodes below it, and the messages
+`lm_up` that they send to their ancestors.
+If `node` is the root, return the log-likelihood of the data.
+
+`use_max` is for joint ML reconstruction: messages are maximized over the states of
+children instead of summed.
 """
-function log_message_up!(
-    node::PosState{q},
-    strategy::ASRMethod,
-    holder::Vector{Float64} = Vector{Float64}(undef, q);
-    set_opt_state = true,
-) where q
-    log_message = if strategy.joint && strategy.ML
-        log_message_up_max!(node, holder; set_opt_state)
+function messages_from_leaves!(node::TreeNode{<:AState}, use_max::Bool)
+    W = node.data.weights
+    if !isleaf(node) # leaves: `v` is already set by `set_leaf_state!`
+        # log v = sum of log-messages from children
+        W.v .= 0
+        for c in children(node)
+            messages_from_leaves!(c, use_max)
+            W.v .+= c.data.weights.lm_up
+        end
+        W.Fv = exp_normalize!(W.v)
+    end
+
+    return if isroot(node)
+        lk = use_max ? maximum(W.π .* W.v) : sum(W.π .* W.v)
+        log(lk) + W.Fv
     else
-        log_message_up_sum(node, holder)
+        message_to_ancestor!(W, use_max)
+        nothing
     end
-    node.weights.lm_up .= log_message
-    return log_message
-end
-
-function log_message_up_max!(
-    node::PosState{q}, lk_factor; set_opt_state = true,
-) where q
-    for r in 1:q # loop over parent state r and find best node state c
-        lk_factor[r], node_state = findmax(1:q) do c
-            node.weights.T[r,c] * node.weights.v[c]
-        end
-        if set_opt_state
-            node.weights.c[r] = node_state
-        end
-    end
-    return log.(lk_factor) .+ node.weights.Fv[]
-end
-function log_message_up_sum(
-    node::PosState{q}, lk_factor,
-) where q
-    mul!(lk_factor, node.weights.T, node.weights.v) # overwrites lk_factor
-    return log.(lk_factor) .+ node.weights.Fv[]
 end
 
 """
-    log_message_down(node, ...)
+    message_to_ancestor!(W::BranchWeights, use_max)
 
-Return the log of the message that `node` sends to the branch `node --> c` where `c` is any child.
-This uses only information from *above* `node`: `node.T` and `node.u`.
-Information sent on branch `node --> c1` and coming from `c2 --> node` is taken care of by `log_message_up`.
+Set `W.lm_up[a] = log(sum_b T[a,b] v[b]) + Fv`: log-probability of the data below the node,
+given that its ancestor is in state `a`.
+With `use_max`, the sum is replaced by a max, and the best `b` is stored in `W.best_state[a]`.
 """
-function log_message_down(
-    node::PosState, lk_factor::Vector{Float64}, strategy::ASRMethod,
-)
-    return if strategy.joint && strategy.ML
-        log_message_down_max(node, lk_factor)
+function message_to_ancestor!(W::BranchWeights{q}, use_max::Bool) where q
+    if use_max
+        for a in 1:q
+            W.lm_up[a], W.best_state[a] = findmax(b -> W.T[a, b] * W.v[b], 1:q)
+        end
     else
-        log_message_down_sum(node, lk_factor)
+        mul!(W.lm_up, W.T, W.v)
     end
-end
-
-function log_message_down_max(
-    node::PosState{q}, lk_factor::Vector{Float64},
-) where q
-    # loop over node state c and find best ancestral state r
-    for c in 1:q
-        lk_factor[c], a_state = findmax(1:q) do r
-            node.weights.T[r,c] * node.weights.u[r]
-        end
-    end
-    return log.(lk_factor) .+ node.weights.Fu[]
-end
-
-function log_message_down_sum(
-    node::PosState{q}, lk_factor::Vector{Float64},
-) where q
-    mul!(lk_factor, node.weights.T', node.weights.u)
-    return log.(lk_factor) .+ node.weights.Fu[]
-end
-
-#######################################################################################
-###################################### Likelihood #####################################
-#######################################################################################
-
-## DOWN LIKELIHOOD
-
-function down_likelihood!(tree, strategy; kwargs...)
-    return pull_weights_up!(tree.root, strategy; kwargs...)
-end
-
-function pull_weights_up!(
-    parent::TreeNode{AState{q}}, strategy::ASRMethod; holder = Vector{Float64}(undef, q)
-) where q
-    verbose() > 2 && @info "Weights up for node $(label(parent)) and pos $(current_pos())"
-    if isleaf(parent)
-        set_leaf_state!(parent.data, current_pos())
-        return nothing
-    end
-
-    # Pulling weights from all children
-    H = zeros(Float64, q) # will contain the sum of log messages
-    for c in children(parent)
-        pull_weights_up!(c, strategy; holder) # pull weights for child
-        verbose() > 2 && @info "Pulling weights up: from $(label(c)) to $(label(parent)) - pos $(current_pos())"
-        H .+= log_message_up!(
-            c.data.pstates[current_pos()], strategy, holder,
-        )
-    end
-    # Using log messages to compute v and F at the current node
-    Hmax = maximum(H)
-    Z = sum(h -> exp(h - Hmax), H) # the max term in this sum is 1, so it's in [1,q]
-    foreach(x -> parent.data.pstates[current_pos()].weights.v[x] = exp(H[x] - Hmax) / Z, 1:q)
-    parent.data.pstates[current_pos()].weights.Fv[] = log(Z) + Hmax
-
+    W.lm_up .= log.(W.lm_up) .+ W.Fv
     return nothing
 end
 
-## UP LIKELIHOOD
+"""
+    messages_from_root!(node)
 
-up_likelihood!(tree, strategy; kwargs...) = up_likelihood!(tree.root, strategy; kwargs...)
-function up_likelihood!(
-    node::TreeNode{AState{q}}, strategy; holder = Vector{Float64}(undef, q)
-) where q
-    # compute up lk for `node`
+Compute the up-likelihood `u` of all nodes below `node`. Requires `messages_from_leaves!`.
+
+For a child `c` of `node`, `u_c` is the probability of the data not below `c`, as a function
+of the state `a` of `node`. It is the product of
+- the message coming from above `node`: `π[a]` if `node` is the root, otherwise
+  `sum_r u_node[r] T_node[r, a]`;
+- the messages `lm_up` from the other children of `node` (the sisters of `c`).
+"""
+function messages_from_root!(node::TreeNode{<:AState})
+    W = node.data.weights
+    for c in children(node)
+        Wc = c.data.weights
+        # message from above `node`
+        if isroot(node)
+            Wc.u .= log.(W.π)
+        else
+            mul!(Wc.u, W.T', W.u)
+            Wc.u .= log.(Wc.u) .+ W.Fu
+        end
+        # messages from sisters
+        for sister in children(node)
+            sister != c && (Wc.u .+= sister.data.weights.lm_up)
+        end
+        Wc.Fu = exp_normalize!(Wc.u)
+
+        messages_from_root!(c)
+    end
+    return nothing
+end
+
+"""
+    exp_normalize!(x)
+
+Replace log-weights `x` by normalized weights `exp.(x) / Z` in place, and return `log(Z)`.
+"""
+function exp_normalize!(x)
+    xmax = maximum(x)
+    x .= exp.(x .- xmax)
+    Z = sum(x)
+    x ./= Z
+    return log(Z) + xmax
+end
+
+#######################################################################################
+################################### Reconstruction ####################################
+#######################################################################################
+
+#=
+For each strategy, a function going from the root to the leaves and setting
+`sequence[pos]` and `posterior[:, pos]` at each node.
+=#
+
+"""
+    reconstruct_marginal!(node, pos, ML::Bool)
+
+Marginal reconstruction: the posterior of each node is computed independently of the
+states chosen at other nodes. Pick the most likely state if `ML`, otherwise sample.
+"""
+function reconstruct_marginal!(node::TreeNode{<:AState}, pos, ML::Bool)
+    W = node.data.weights
+    p = site_posterior(node.data, pos)
     if isroot(node)
-        fetch_up_lk_root!(node.data.pstates[current_pos()], strategy)
+        p .= W.π .* W.v
     else
-        fetch_up_lk!(node, current_pos(), holder, strategy)
+        mul!(p, W.T', W.u) # sum_a u[a] T[a, b]
+        p .*= W.v
     end
-    normalize_weights!(node, current_pos())
-    # recursive call on children (only after we computed u)
+    p ./= sum(p)
+    node.data.sequence[pos] = ML ? argmax(p) : wsample(p)
+
     for c in children(node)
-        up_likelihood!(c, strategy; holder)
+        reconstruct_marginal!(c, pos, ML)
     end
-end
-
-function fetch_up_lk_root!(root::PosState, strategy::ASRMethod)
-    return if strategy.joint && strategy.ML
-        fetch_up_lk_root_max!(root)
-    else
-        fetch_up_lk_root_sum!(root)
-    end
-end
-function fetch_up_lk_root_max!(root::PosState)
-    root.weights.u .= 1.
-    root.weights.Fu[] = 0.
-    return nothing
-end
-function fetch_up_lk_root_sum!(root::PosState)
-    root.weights.u = root.weights.π
-    root.weights.Fu[] = 0.
     return nothing
 end
 
 """
-    fetch_up_lk!(node::TreeNode, pos::Int, holder::Vector{Float64}, strategy)
+    sample_joint!(node, pos[, ancestor_state])
 
-Let `A` be the ancestor of `node`.
-This computes the up-likelihood for the branch `A --> node`, by
-- calling `fetch_up_lk_from_ancestor!(node, A)`, which will use the up lk from `A`
-- calling `fetch_up_lk_from_child!(node, c)` for all `c ∈ children(A)` and `c ≠ node`,
-  which will use the down lk from `c`.
-
-If those quantities were initialized correctly, then the up likelihood at `node` is
-fully computed here, but not normalized.
+Sample the state of `node` given the state of its ancestor and the data below it:
+`P(b | ancestor_state) ∝ T[ancestor_state, b] * v[b]` (`π[b] * v[b]` at the root).
+The posterior stored is this conditional distribution.
 """
-function fetch_up_lk!(
-    node::TreeNode{AState{q}}, pos::Int, holder::Vector{Float64}, strategy
-) where q
-    A = ancestor(node)
-
-    G = zeros(Float64, q) # to contain log(message)
-    # Message from the part above ancestor
-    G += log_message_down(
-        A.data.pstates[pos], holder, strategy,
-    )
-    # Message from sister branches
-    # for each c, get the message from c to A, and use it to set node.weights.u
-    for c in Iterators.filter(!=(node), children(A))
-        # G += log_message_up!(
-        #     c.data.pstates[pos], strategy, holder;
-        #     set_opt_state = false,
-        # )
-        G += c.data.pstates[pos].weights.lm_up # already calculated!
-    end
-
-    # Updating node.weights.u
-    Gmax = maximum(G)
-    Z = sum(g -> exp(g - Gmax), G)
-    foreach(i -> node.data.pstates[pos].weights.u[i] = exp(G[i] - Gmax)/Z, 1:q)
-    node.data.pstates[pos].weights.Fu[] = log(Z) + Gmax
-
-    return nothing
-end
-
-#######################################################################################
-######################################## Utils ########################################
-#######################################################################################
-
-
-function likelihood(node::TreeNode, strategy::ASRMethod)
-    return if strategy.joint && strategy.ML
-        likelihood_max(node, map(s -> s.weights.T, node.data.pstates))
-    else
-        likelihood(node, map(s -> s.weights.T, node.data.pstates))
-    end
-end
-function likelihood(node::TreeNode, Ts::AbstractVector{<:AbstractMatrix{Float64}})
-    return sum(zip(node.data.pstates, Ts)) do (s, T)
-        log(s.weights.u' * T * s.weights.v) + s.weights.Fv[] + s.weights.Fu[]
-    end
-end
-function likelihood_max(node::TreeNode, Ts::AbstractVector{<:AbstractMatrix{Float64}})
-    q = size(first(Ts), 1)
-    XY = [(x,y) for x in 1:q for y in 1:q]
-    return sum(zip(node.data.pstates, Ts)) do (s, T)
-        lk = maximum(XY) do (x,y)
-            s.weights.u[x] * s.weights.T[x,y] * s.weights.v[y]
-        end
-        log(lk) + s.weights.Fv[] + s.weights.Fu[]
-    end
-end
-
-function set_leaf_state!(leaf::PosState, a::Int)
-    for b in eachindex(leaf.weights.v)
-        leaf.weights.v[b] = (b == a ? 1. : 0.)
-    end
-    leaf.c = a
-
-    return nothing
-end
-function set_leaf_state!(leaf::PosState, ::Nothing)
-    error("""Tried to initialize leaf state at position $(leaf.pos), got `nothing`.
-        Are sequences attached to the leaves of the tree?"""
-    )
-end
-set_leaf_state!(leaf::AState, pos) = set_leaf_state!(leaf.pstates[pos], leaf.sequence[pos])
-
-function posterior(p::PosState)
-    w = (p.weights.u' * p.weights.T)' .* p.weights.v
-    return w / sum(w)
-end
-function posterior(p::PosState, anc_state::Int)
-    w = p.weights.u[anc_state] * p.weights.T[anc_state,:] .* p.weights.v
-    return w / sum(w)
-end
-
-"""
-    pick_state_ML!(p::PosState{q}) where q
-
-Pick marginal ML state at `p`.
-"""
-function pick_ML_state!(p::PosState{q}) where q
-    p.posterior = posterior(p)
-    p.c = argmax(p.posterior)
-    return p.c
-end
-
-function pick_ML_state_joint!(p::PosState{q}) where q
-    @warn "Joint reconstruction probably wrong: should take ancestral state into account (if testing: warning is normal)"
-    # error("ML + joint not implemented yet (have to fix bug) -- change strategy")
-    XY = [(x,y) for x in 1:q for y in 1:q]
-    lk, idx = findmax(XY) do (x,y)
-        p.weights.u[x] * p.weights.T[x,y] * p.weights.v[y]
-    end
-
-    p.c = XY[idx][2]
-    x = XY[idx][1]
-    p.posterior = posterior(p, x)
-
-    return p.c
-end
-
-"""
-    sample_state!(pstate::PosState)
-
-Marginally sample state, without taking ancestor state into account.
-"""
-function sample_state!(p::PosState)
-    p.posterior = posterior(p)
-    p.c = wsample(p.posterior)
-    return p.c
-end
-sample_state!(pstate::PosState, ::Nothing) = sample_state!(pstate)
-
-"""
-    sample_state!(pstate::PosState, anc_state)
-
-Sample state at `pstate`, taking into account sampled ancestral state.
-"""
-function sample_state!(p::PosState, anc_state::Int)
-    p.posterior = posterior(p, anc_state)
-    p.c = wsample(p.posterior)
-    return p.c
-end
-
-function set_state!(pstate::PosState, anc_state::Union{Nothing, Int}, strategy::ASRMethod)
-    if strategy.joint && strategy.ML
-        # the joint ML reconstruction
-        # this only makes sense if the alg from Pupko et. al. has been used
-        pick_ML_state_joint!(pstate)
-    elseif !strategy.joint && strategy.ML
-        # the marginal ML reconstruction: pick max ML at p
-        pick_ML_state!(pstate)
-    elseif strategy.joint && !strategy.ML
-        # sample at p taking the ancestor into account
-        sample_state!(pstate, anc_state)
-    elseif !strategy.joint && !strategy.ML
-        # marginal ML: sample at p directly from the likelihood
-        sample_state!(pstate)
-        #
-    end
-
-    return pstate.c, pstate.posterior
-end
-
-
-function set_state!(node::TreeNode, anc_state, pos::Int, strategy)
-    a, _ = set_state!(node.data.pstates[pos], anc_state, strategy)
+function sample_joint!(node::TreeNode{<:AState}, pos, ancestor_state=nothing)
+    p = conditional_distribution!(node, pos, ancestor_state)
+    node.data.sequence[pos] = wsample(p)
     for c in children(node)
-        set_state!(c, a, pos, strategy)
+        sample_joint!(c, pos, node.data.sequence[pos])
     end
     return nothing
 end
-set_states!(tree::Tree, pos::Int, strategy) = set_state!(tree.root, nothing, pos, strategy)
 
+"""
+    reconstruct_joint_ML!(node, pos[, ancestor_state])
 
-# useful for debugging
-let
-    obs_node = nothing
-    global set_obs_node(n) = (obs_node = n)
-    global get_obs_node() = obs_node
+Joint maximum likelihood reconstruction (Pupko et al., 2000).
+Requires `messages_from_leaves!(node, true)`, which stored in `best_state` the best state
+of each node given the state of its ancestor.
+The posterior stored is the conditional distribution given the ancestor's state, computed
+with max-messages: it is only indicative.
+"""
+function reconstruct_joint_ML!(node::TreeNode{<:AState}, pos, ancestor_state=nothing)
+    p = conditional_distribution!(node, pos, ancestor_state)
+    node.data.sequence[pos] = if isroot(node)
+        argmax(p)
+    elseif isleaf(node)
+        node.data.sequence[pos] # observed
+    else
+        node.data.weights.best_state[ancestor_state]
+    end
+    for c in children(node)
+        reconstruct_joint_ML!(c, pos, node.data.sequence[pos])
+    end
+    return nothing
+end
+
+# `posterior[:, pos] ∝ T[ancestor_state, :] .* v`, or `π .* v` at the root
+function conditional_distribution!(node::TreeNode{<:AState}, pos, ancestor_state)
+    W = node.data.weights
+    p = site_posterior(node.data, pos)
+    if isroot(node)
+        p .= W.π .* W.v
+    else
+        p .= view(W.T, ancestor_state, :) .* W.v
+    end
+    p ./= sum(p)
+    return p
 end

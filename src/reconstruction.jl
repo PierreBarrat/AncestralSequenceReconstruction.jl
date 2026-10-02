@@ -66,7 +66,7 @@ function infer_ancestral(
     L = length(first(leaf_sequences)[2])
     q = length(model.alphabet)
     if any(x -> length(x[2]) != L, leaf_sequences)
-        error("All sequences must have the same length in $fastafile")
+        error("All leaf sequences must have the same length")
     end
 
     tree = convert(AState{q}, tree)
@@ -175,17 +175,19 @@ function infer_ancestral!(
         opt_strat = @set strategy.joint=false
         optimize_branch_scale!(tree, model, opt_strat)
     end
-    # Reconstruction
+    # Reconstruction: sets `sequence` and `posterior` at each node
     pruning_alg!(tree, model, strategy)
-    for n in internals(tree), pos in ordering(model)
-        n.data.sequence[pos] = n.data.pstates[pos].c
-    end
-    return nothing # return value should be lk of reconstruction
+    return nothing
 end
 
+"""
+    tree_likelihood!(tree, model, strategy)
+
+Log-likelihood of the leaf sequences. For joint ML strategies, this is the likelihood of
+the best joint reconstruction.
+"""
 function tree_likelihood!(tree::Tree, model::EvolutionModel, strategy::ASRMethod)
-    pruning_alg!(tree, model, strategy; set_state=false)
-    return likelihood(tree.root, strategy)
+    return pruning_alg!(tree, model, strategy; set_state=false)
 end
 
 
@@ -301,7 +303,7 @@ function write_state_table(
             """)
         end
         for (file, table) in zip(outtable, state_tables)
-            writeddlm(file, table, '\t')
+            writedlm(file, table, '\t')
         end
     else
         error("Got $outtable for `outtable` argument, expected string or array of strings")
