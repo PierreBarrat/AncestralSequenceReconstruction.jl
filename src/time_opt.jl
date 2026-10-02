@@ -102,6 +102,14 @@ end
 
 
 
+# Post-order traversal of the nodes of `tree` (children before ancestors).
+# TreeTools < 0.7 provides `POT`, newer versions `postorder_traversal`.
+@static if isdefined(TreeTools, :postorder_traversal)
+    postorder_nodes(tree) = TreeTools.postorder_traversal(tree)
+else
+    postorder_nodes(tree) = TreeTools.POT(tree)
+end
+
 """
     optimize_branch_lengths_cycle!(tree, model::ProfileModel, strategy)
 
@@ -111,7 +119,7 @@ function optimize_branch_lengths_cycle!(tree::Tree, model::ProfileModel, strateg
     L = length(model)
     a, b = zeros(Float64, L), zeros(Float64, L)
     opt = branch_length_optimizer(model)
-    for node in Iterators.filter(!isroot, POT(tree))
+    for node in Iterators.filter(!isroot, postorder_nodes(tree))
         # one pass of the message passing algorithm, with current branch lengths
         branch_coefficients!(a, b, tree, node, model, strategy)
         optimize_branch_length!(node, opt, a, b, model.μ)

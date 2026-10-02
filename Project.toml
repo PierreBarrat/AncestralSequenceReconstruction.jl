@@ -17,8 +17,9 @@ SubstitutionModels = "8365b1bb-bd83-58ee-a267-f2965fc81c73"
 TreeTools = "62f0eae3-8c0e-4032-a621-7756092209e5"
 
 [compat]
-# TreeTools >= 0.7 no longer exports `POT` (see `postorder_traversal`) and needs Julia >= 1.11
-TreeTools = "0.6"
+# 0.6 (Julia < 1.11) and 0.8 provide different tree traversals: see `postorder_nodes`.
+# 0.7 was not tested.
+TreeTools = "0.6, 0.8"
 julia = "1.9"
 
 [extras]
