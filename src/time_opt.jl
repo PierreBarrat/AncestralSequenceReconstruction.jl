@@ -111,7 +111,7 @@ function optimize_branch_lengths_cycle!(tree::Tree, model::ProfileModel, strateg
     L = length(model)
     a, b = zeros(Float64, L), zeros(Float64, L)
     opt = branch_length_optimizer(model)
-    for node in Iterators.filter(!isroot, POT(tree))
+    for node in Iterators.filter(!isroot, postorder_traversal(tree))
         # one pass of the message passing algorithm, with current branch lengths
         branch_coefficients!(a, b, tree, node, model, strategy)
         optimize_branch_length!(node, opt, a, b, model.μ)

@@ -166,8 +166,8 @@ reconstructed_sequences["NODE_3"]
 
 # ╔═╡ 666620a2-c34e-4df3-bd93-acdeccb783c7
 # list of leaves below NODE_3
-# POTleaves is a post-order traversal iterator on the leaves below a node
-map(label, POTleaves(opt_tree["NODE_3"])) 
+leaf_labels(node) = isleaf(node) ? [label(node)] : reduce(vcat, map(leaf_labels, children(node)))
+leaf_labels(opt_tree["NODE_3"])
 
 # ╔═╡ fe32ade5-6429-470d-a0c9-0cb3a5add1c7
 md"## Bayesian reconstruction"
