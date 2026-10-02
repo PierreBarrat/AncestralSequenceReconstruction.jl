@@ -29,7 +29,7 @@ Here are the steps to installation.
 2. Open an REPL session, and install the package by running
   ```
   using Pkg
-  Pkg.add("https://github.com/PierreBarrat/AncestralSequenceReconstruction.jl")
+  Pkg.add(url="https://github.com/PierreBarrat/AncestralSequenceReconstruction.jl")
   ```
   You can now use it from inside the julia session: `using AncestralSequenceReconstruction`  
 3. To see the **example notebook**, you need to install [Pluto](https://github.com/fonsp/Pluto.jl): `Pkg.add("Pluto")`. 
@@ -46,17 +46,57 @@ Scripts that were used to generate the results in the article can be found at ht
 
 ## Reconstructing ancestral sequences
 
-See example notebook and the docstring `?infer_ancestral`. 
+See the example notebook and the docstrings `?infer_ancestral` and `?ASRMethod`. 
+Two short examples, to run from the folder `example/PF00014/reconstruction`.
+
+**Most likely ancestors from a tree and an alignment**
+```julia
+using AncestralSequenceReconstruction, JLD2
+
+arnet = JLD2.load("arnet_PF00014_lJ0.01_lH0.001.jld2")["arnet"] # model inferred with ArDCA
+model = AutoRegressiveModel(arnet)
+
+strategy = ASRMethod(; joint=false, ML=true) # most likely state at each node
+tree, sequences = infer_ancestral(
+    "tree_iqtree.nwk", "PF00014_mgap6_subalignment.fasta", model, strategy;
+    outfasta = "internals.fasta", # optional: write internal sequences to a fasta file
+)
+sequences["NODE_1"] # reconstructed sequence of node `NODE_1`, a `String`
+```
+
+**Sampling ancestors and reading posterior distributions**
+```julia
+using TreeTools # for `tree["NODE_1"]`
+
+# 100 independent samples of the internal sequences, instead of the most likely one
+strategy = ASRMethod(; joint=false, ML=false, repetitions=100)
+tree, samples = infer_ancestral(
+    "tree_iqtree.nwk", "PF00014_mgap6_subalignment.fasta", model, strategy
+)
+samples[1]["NODE_1"] # `samples` has one `Dict` (node name => sequence) per repetition
+
+# `tree` holds the last repetition. At each node:
+node = tree["NODE_1"]
+node.data.sequence                      # reconstructed sequence, as integers
+ASR.site_posterior(node.data, 10)       # P(state | data) at site 10, a vector of length q
+node.data.posterior                     # the same for all sites, a q x L matrix
+model.alphabet.string[argmax(ASR.site_posterior(node.data, 10))] # amino acid for the most likely state
+```
+`strategy` has four modes, see `?ASRMethod`: `joint` and `ML` can each be `true` or `false`. 
+For `joint=false`, the posterior is the marginal distribution at each node. 
+For `joint=true`, it is the distribution given the state chosen at the ancestor of the node.
+
+Memory use grows linearly with sequence length: for each node and site, only the sequence and the posterior distribution are kept. 
 
 ## Evolutionary models
 
-The package can accomodate other evolutionary models than the autoregressive one. 
+The package can accommodate other evolutionary models than the autoregressive one. 
 Main functions for reconstruction take arguments of the type `EvolutionModel`, which currently has two subtypes  
 
 - the `AutoRegressiveModel` described in the example notebook  
 - `ProfileModel`, where all sites evolve independently.   
 
-For information about the latter, see `src/profile_model.jl`. 
+For information about the latter, see `?ProfileModel`. 
 
 ## Simulating sequences
 
@@ -64,6 +104,14 @@ It is possible to simulate evolution by using an evolutionary model and a tree.
 See the functions in `src/simulate.jl`. 
 
 # Current issues/limitations
+
+## Branch lengths
+
+`optimize_branch_length=true` is not available directly for the autoregressive model. 
+The branches are optimized using a `ProfileModel` built from 1000 sequences sampled from the autoregressive model, 
+so the optimized lengths vary slightly between runs (call `Random.seed!` first to reproduce them). 
+Branch length optimization never uses the genetic code, even if the model has `with_code=true`. 
+Finally, `optimize_branch_scale=true` does not work with the autoregressive model, only with a `ProfileModel`. 
 
 ## Genetic code
 
