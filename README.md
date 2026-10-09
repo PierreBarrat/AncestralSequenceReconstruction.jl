@@ -25,7 +25,7 @@ The only way to use it is through a Julia script, notebook or REPL session.
 I recommend having a look to the example notebook to learn how to use the software. 
 Here are the steps to installation. 
 
-1. Install Julia: https://julialang.org/. If you're never used the language, it can be useful to have a look at https://docs.julialang.org/en/v1/manual/getting-started/  
+1. Install Julia (version 1.11 or later): https://julialang.org/. If you're never used the language, it can be useful to have a look at https://docs.julialang.org/en/v1/manual/getting-started/  
 2. Open an REPL session, and install the package by running
   ```
   using Pkg
